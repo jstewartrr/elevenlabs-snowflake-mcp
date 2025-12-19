@@ -49,11 +49,11 @@ Snowflake (SOVEREIGN_MIND database)
    |------|-------|
    | SNOWFLAKE_ACCOUNT | jga82554.east-us-2.azure |
    | SNOWFLAKE_USER | JOHN_CLAUDE |
-   | SNOWFLAKE_PASSWORD | [your password] |
+   | SNOWFLAKE_PASSWORD | Middleground986959 |
    | SNOWFLAKE_WAREHOUSE | SOVEREIGN_MIND_WH |
    | SNOWFLAKE_DATABASE | SOVEREIGN_MIND |
    | SNOWFLAKE_ROLE | JOHN_CLAUDE |
-   | MCP_API_KEY | [generate a secure key] |
+   | MCP_API_KEY | 47407b604ae3eac9e437a8ae89139454b2f5bd6d497302fb |
 
 5. **Ingress tab:**
    - Ingress: ✅ Enabled
