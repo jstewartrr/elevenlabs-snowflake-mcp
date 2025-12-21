@@ -10,6 +10,7 @@ app = Flask(__name__)
 GOOGLE_CREDENTIALS_JSON = os.environ.get('GOOGLE_CREDENTIALS_JSON', '{}')
 GOOGLE_PROJECT_NUMBER = os.environ.get('GOOGLE_PROJECT_NUMBER', '524579447726')
 GOOGLE_LOCATION = os.environ.get('GOOGLE_LOCATION', 'global')
+IMPERSONATE_USER = os.environ.get('IMPERSONATE_USER', '')  # e.g., jstewart@middleground.com
 
 SCOPES = ['https://www.googleapis.com/auth/cloud-platform']
 BASE_URL = f"https://{GOOGLE_LOCATION}-discoveryengine.googleapis.com/v1alpha/projects/{GOOGLE_PROJECT_NUMBER}/locations/{GOOGLE_LOCATION}"
@@ -17,8 +18,17 @@ BASE_URL = f"https://{GOOGLE_LOCATION}-discoveryengine.googleapis.com/v1alpha/pr
 credentials = None
 try:
     credentials_info = json.loads(GOOGLE_CREDENTIALS_JSON)
-    credentials = service_account.Credentials.from_service_account_info(credentials_info, scopes=SCOPES)
-    logger.info(f"Initialized credentials for project: {GOOGLE_PROJECT_NUMBER}")
+    if IMPERSONATE_USER:
+        # Domain-wide delegation: impersonate user
+        credentials = service_account.Credentials.from_service_account_info(
+            credentials_info, 
+            scopes=SCOPES,
+            subject=IMPERSONATE_USER
+        )
+        logger.info(f"Initialized credentials impersonating: {IMPERSONATE_USER}")
+    else:
+        credentials = service_account.Credentials.from_service_account_info(credentials_info, scopes=SCOPES)
+        logger.info(f"Initialized credentials for project: {GOOGLE_PROJECT_NUMBER}")
 except Exception as e:
     logger.error(f"Init failed: {e}")
 
@@ -99,6 +109,6 @@ def mcp_post():
     return jsonify({"jsonrpc":"2.0","id":rid,"error":{"code":-32601,"message":"Method not found"}})
 
 @app.route('/health', methods=['GET'])
-def health(): return jsonify({"status":"healthy","service":"notebooklm-mcp"})
+def health(): return jsonify({"status":"healthy","service":"notebooklm-mcp","impersonating":IMPERSONATE_USER or "none"})
 
 if __name__ == '__main__': app.run(host='0.0.0.0', port=int(os.environ.get('PORT',8080)))
