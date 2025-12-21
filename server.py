@@ -1,57 +1,69 @@
 """
-Sovereign Mind MCP Proxy
-Bridges ElevenLabs Conversational AI to Snowflake
-
-Deploy to Azure Container Apps
+Sovereign Mind MCP Server - Proper SSE Implementation
+Uses official MCP SDK with SSE transport for ElevenLabs integration
 """
 
 import os
 import json
 import logging
-from typing import Any
+from contextlib import asynccontextmanager
 import snowflake.connector
-from fastapi import FastAPI, HTTPException, Header, Request
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from sse_starlette.sse import EventSourceResponse
-import asyncio
+from starlette.applications import Starlette
+from starlette.routing import Mount, Route
+from starlette.responses import JSONResponse
+from mcp.server.fastmcp import FastMCP
+from mcp.server.sse import SseServerTransport
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Sovereign Mind MCP Proxy")
+# Create MCP server
+mcp = FastMCP("Sovereign Mind Snowflake")
 
-# CORS - allow ElevenLabs to connect
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Environment variables
+# Snowflake connection config from environment
 SNOWFLAKE_CONFIG = {
-    "account": os.getenv("SNOWFLAKE_ACCOUNT"),
-    "user": os.getenv("SNOWFLAKE_USER"),
-    "password": os.getenv("SNOWFLAKE_PASSWORD"),
-    "warehouse": os.getenv("SNOWFLAKE_WAREHOUSE"),
-    "database": os.getenv("SNOWFLAKE_DATABASE"),
-    "role": os.getenv("SNOWFLAKE_ROLE"),
+    "account": os.environ.get("SNOWFLAKE_ACCOUNT", "jga82554.east-us-2.azure"),
+    "user": os.environ.get("SNOWFLAKE_USER", "JOHN_CLAUDE"),
+    "password": os.environ.get("SNOWFLAKE_PASSWORD"),
+    "warehouse": os.environ.get("SNOWFLAKE_WAREHOUSE", "SOVEREIGN_MIND_WH"),
+    "database": os.environ.get("SNOWFLAKE_DATABASE", "SOVEREIGN_MIND"),
+    "schema": os.environ.get("SNOWFLAKE_SCHEMA", "RAW"),
+    "role": os.environ.get("SNOWFLAKE_ROLE", "SOVEREIGN_MIND_ROLE"),
 }
-
-# Simple API key for ElevenLabs authentication
-API_KEY = os.getenv("MCP_API_KEY", "sovereign-mind-2024")
 
 
 def get_snowflake_connection():
-    """Create Snowflake connection"""
+    """Create a Snowflake connection"""
     return snowflake.connector.connect(**SNOWFLAKE_CONFIG)
 
 
-def execute_query(sql: str) -> dict:
-    """Execute SQL and return results"""
+@mcp.tool()
+def query_snowflake(sql: str) -> str:
+    """
+    Execute a SQL query on Snowflake SOVEREIGN_MIND database.
+    
+    Available tables in SOVEREIGN_MIND.RAW:
+    - SHARED_MEMORY: Shared context between Claude instances
+      Columns: SOURCE, CATEGORY, WORKSTREAM, SUMMARY, DETAILS, PRIORITY, STATUS, CREATED_AT
+    - EMAILS: Email data 
+      Columns: SUBJECT, BODY_PREVIEW, BODY_CONTENT, RECEIVED_AT, HAS_ATTACHMENTS
+    - CALENDAR_EVENTS: Calendar data
+      Columns: SUBJECT, ORGANIZER, ATTENDEES, LOCATION, START_TIME, END_TIME
+    - GOODNOTES: Handwritten notes from GoodNotes OCR
+    - CONVERSATIONS: Voice transcripts from Plaud
+    
+    For SHARED_MEMORY writes, use:
+    INSERT INTO SOVEREIGN_MIND.RAW.SHARED_MEMORY 
+    (SOURCE, CATEGORY, WORKSTREAM, SUMMARY, PRIORITY, STATUS) 
+    VALUES ('ABBI', 'CATEGORY', 'WORKSTREAM', 'Summary text', 'HIGH', 'ACTIVE')
+    
+    Args:
+        sql: SQL query to execute (SELECT, INSERT, UPDATE, DELETE all supported)
+        
+    Returns:
+        JSON string with query results or confirmation
+    """
     try:
         conn = get_snowflake_connection()
         cursor = conn.cursor()
@@ -64,256 +76,75 @@ def execute_query(sql: str) -> dict:
         rows = cursor.fetchall()
         
         # Convert to list of dicts
-        results = [dict(zip(columns, row)) for row in rows]
+        data = []
+        for row in rows:
+            row_dict = {}
+            for i, col in enumerate(columns):
+                val = row[i]
+                # Convert non-serializable types to strings
+                if hasattr(val, 'isoformat'):
+                    val = val.isoformat()
+                elif isinstance(val, bytes):
+                    val = val.decode('utf-8', errors='replace')
+                row_dict[col] = val
+            data.append(row_dict)
         
         cursor.close()
         conn.close()
         
-        return {
+        result = {
             "success": True,
-            "data": results,
-            "row_count": len(results),
-            "columns": columns
+            "data": data,
+            "row_count": len(data)
         }
+        
+        # For INSERT/UPDATE/DELETE, also include rows affected
+        if not data and cursor.rowcount >= 0:
+            result["rows_affected"] = cursor.rowcount
+        
+        return json.dumps(result, indent=2, default=str)
+        
     except Exception as e:
         logger.error(f"Query error: {e}")
-        return {
+        return json.dumps({
             "success": False,
             "error": str(e)
-        }
+        })
 
 
-# ============================================================
-# MCP Protocol Implementation for ElevenLabs
-# ============================================================
-
-class MCPRequest(BaseModel):
-    jsonrpc: str = "2.0"
-    id: Any = None
-    method: str
-    params: dict = {}
+# Create SSE transport for MCP
+sse_transport = SseServerTransport("/messages/")
 
 
-@app.get("/")
-async def root():
-    return {"status": "Sovereign Mind MCP Proxy running"}
+async def handle_sse(request):
+    """Handle SSE connection for MCP protocol"""
+    logger.info("New SSE connection established")
+    async with sse_transport.connect_sse(
+        request.scope, request.receive, request._send
+    ) as streams:
+        await mcp._mcp_server.run(
+            streams[0], 
+            streams[1],
+            mcp._mcp_server.create_initialization_options()
+        )
 
 
-@app.get("/health")
-async def health():
-    return {"status": "healthy"}
+async def handle_root(request):
+    """Health check endpoint"""
+    return JSONResponse({"status": "Sovereign Mind MCP Server running", "transport": "SSE"})
 
 
-@app.get("/sse")
-@app.post("/sse")
-async def sse_endpoint(request: Request):
-    """SSE endpoint for MCP protocol"""
-    
-    async def event_generator():
-        # Send initial connection event
-        yield {
-            "event": "open",
-            "data": json.dumps({"status": "connected"})
-        }
-        
-        # Keep connection alive
-        while True:
-            await asyncio.sleep(30)
-            yield {
-                "event": "ping",
-                "data": ""
-            }
-    
-    return EventSourceResponse(event_generator())
-
-
-@app.post("/mcp")
-async def mcp_handler(
-    request: MCPRequest,
-    x_api_key: str = Header(None, alias="X-API-Key")
-):
-    """Handle MCP JSON-RPC requests"""
-    
-    # Validate API key (optional - can be disabled for testing)
-    if API_KEY and x_api_key != API_KEY:
-        # Log but don't block for now during testing
-        logger.warning(f"Invalid or missing API key: {x_api_key}")
-    
-    method = request.method
-    params = request.params
-    request_id = request.id
-    
-    logger.info(f"MCP request: {method} with params: {params}")
-    
-    # Handle MCP methods
-    if method == "initialize":
-        return {
-            "jsonrpc": "2.0",
-            "id": request_id,
-            "result": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {
-                    "tools": {}
-                },
-                "serverInfo": {
-                    "name": "sovereign-mind-snowflake",
-                    "version": "1.0.0"
-                }
-            }
-        }
-    
-    elif method == "tools/list":
-        return {
-            "jsonrpc": "2.0",
-            "id": request_id,
-            "result": {
-                "tools": [
-                    {
-                        "name": "query_sovereign_mind",
-                        "description": "Query the Sovereign Mind Snowflake database containing emails, calendar events, voice transcripts, and handwritten notes for Your Grace",
-                        "inputSchema": {
-                            "type": "object",
-                            "properties": {
-                                "sql": {
-                                    "type": "string",
-                                    "description": "SQL query to execute. Available schemas: EMAILS, CALENDAR, VOICE_RECORDINGS, HANDWRITTEN_NOTES"
-                                }
-                            },
-                            "required": ["sql"]
-                        }
-                    },
-                    {
-                        "name": "list_schemas",
-                        "description": "List available schemas in Sovereign Mind database",
-                        "inputSchema": {
-                            "type": "object",
-                            "properties": {}
-                        }
-                    },
-                    {
-                        "name": "list_tables",
-                        "description": "List tables in a specific schema",
-                        "inputSchema": {
-                            "type": "object",
-                            "properties": {
-                                "schema": {
-                                    "type": "string",
-                                    "description": "Schema name (e.g., EMAILS, CALENDAR)"
-                                }
-                            },
-                            "required": ["schema"]
-                        }
-                    }
-                ]
-            }
-        }
-    
-    elif method == "tools/call":
-        tool_name = params.get("name")
-        tool_args = params.get("arguments", {})
-        
-        if tool_name == "query_sovereign_mind":
-            sql = tool_args.get("sql")
-            if not sql:
-                return {
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "error": {"code": -32602, "message": "Missing 'sql' parameter"}
-                }
-            
-            result = execute_query(sql)
-            return {
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "result": {
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": json.dumps(result, indent=2, default=str)
-                        }
-                    ]
-                }
-            }
-        
-        elif tool_name == "list_schemas":
-            result = execute_query("SHOW SCHEMAS IN DATABASE SOVEREIGN_MIND")
-            return {
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "result": {
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": json.dumps(result, indent=2, default=str)
-                        }
-                    ]
-                }
-            }
-        
-        elif tool_name == "list_tables":
-            schema = tool_args.get("schema", "PUBLIC")
-            result = execute_query(f"SHOW TABLES IN SCHEMA SOVEREIGN_MIND.{schema}")
-            return {
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "result": {
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": json.dumps(result, indent=2, default=str)
-                        }
-                    ]
-                }
-            }
-        
-        else:
-            return {
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "error": {"code": -32601, "message": f"Unknown tool: {tool_name}"}
-            }
-    
-    else:
-        return {
-            "jsonrpc": "2.0",
-            "id": request_id,
-            "error": {"code": -32601, "message": f"Method not found: {method}"}
-        }
-
-
-# ============================================================
-# Direct REST endpoints (alternative to MCP)
-# ============================================================
-
-class QueryRequest(BaseModel):
-    sql: str
-
-
-@app.post("/query")
-async def direct_query(
-    request: QueryRequest,
-    x_api_key: str = Header(None, alias="X-API-Key")
-):
-    """Direct REST endpoint for queries (simpler than MCP)"""
-    if API_KEY and x_api_key != API_KEY:
-        raise HTTPException(status_code=401, detail="Invalid API key")
-    
-    result = execute_query(request.sql)
-    return result
-
-
-@app.get("/schemas")
-async def list_schemas_rest():
-    """List all schemas"""
-    return execute_query("SHOW SCHEMAS IN DATABASE SOVEREIGN_MIND")
-
-
-@app.get("/tables/{schema}")
-async def list_tables_rest(schema: str):
-    """List tables in schema"""
-    return execute_query(f"SHOW TABLES IN SCHEMA SOVEREIGN_MIND.{schema}")
+# Create Starlette app with proper MCP SSE routes
+app = Starlette(
+    routes=[
+        Route("/", endpoint=handle_root),
+        Route("/sse", endpoint=handle_sse),
+        Mount("/messages", app=sse_transport.handle_post_message),
+    ]
+)
 
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    port = int(os.environ.get("PORT", 8080))
+    uvicorn.run(app, host="0.0.0.0", port=port)
