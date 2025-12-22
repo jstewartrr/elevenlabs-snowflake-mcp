@@ -1,0 +1,5 @@
+mcp[cli]>=1.0.0
+fastmcp>=0.1.0
+snowflake-connector-python>=3.0.0
+openai>=1.0.0
+uvicorn>=0.24.0
