@@ -10,6 +10,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY server.py .
 
 ENV PORT=8000
+ENV UVICORN_HOST=0.0.0.0
+ENV MCP_HOST=0.0.0.0
 EXPOSE 8000
 
-CMD ["python", "server.py"]
+CMD ["python", "-c", "from server import mcp; import uvicorn; uvicorn.run(mcp.sse_app(), host='0.0.0.0', port=8000)"]
