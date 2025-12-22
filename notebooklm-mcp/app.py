@@ -43,6 +43,8 @@ MCP_TOOLS = [
     {"name": "get_notebook", "description": "Get notebook details by ID", "inputSchema": {"type": "object", "properties": {"notebook_id": {"type": "string"}}, "required": ["notebook_id"]}},
     {"name": "list_notebooks", "description": "List recently viewed notebooks", "inputSchema": {"type": "object", "properties": {}}},
     {"name": "add_source", "description": "Add a text source to a notebook", "inputSchema": {"type": "object", "properties": {"notebook_id": {"type": "string"}, "content": {"type": "string", "description": "Text content to add"}, "title": {"type": "string", "description": "Title for the source"}}, "required": ["notebook_id", "content"]}},
+    {"name": "add_web_source", "description": "Add a web URL as source to a notebook", "inputSchema": {"type": "object", "properties": {"notebook_id": {"type": "string"}, "url": {"type": "string", "description": "URL of web content"}, "title": {"type": "string", "description": "Display name for the source"}}, "required": ["notebook_id", "url"]}},
+    {"name": "add_youtube_source", "description": "Add a YouTube video as source to a notebook", "inputSchema": {"type": "object", "properties": {"notebook_id": {"type": "string"}, "url": {"type": "string", "description": "YouTube video URL"}}, "required": ["notebook_id", "url"]}},
     {"name": "delete_notebook", "description": "Delete a notebook", "inputSchema": {"type": "object", "properties": {"notebook_id": {"type": "string"}}, "required": ["notebook_id"]}},
     {"name": "share_notebook", "description": "Share a notebook with users", "inputSchema": {"type": "object", "properties": {"notebook_id": {"type": "string"}, "email": {"type": "string"}, "role": {"type": "string", "description": "VIEWER or EDITOR"}}, "required": ["notebook_id", "email", "role"]}}
 ]
@@ -69,8 +71,27 @@ def list_notebooks():
         return {"success": False, "error": str(e)}
 
 def add_source(notebook_id, content, title="Untitled"):
+    """Add raw text content as a source - uses textContent per Google API docs"""
     try:
-        payload = {"userContents": [{"inlineContent": {"content": content, "mimeType": "text/plain"}, "displayName": title}]}
+        payload = {"userContents": [{"textContent": {"sourceName": title, "content": content}}]}
+        r = requests.post(f"{BASE_URL}/notebooks/{notebook_id}/sources:batchCreate", headers=get_headers(), json=payload)
+        return {"success": r.ok, "data": r.json() if r.ok else r.text}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+def add_web_source(notebook_id, url, title="Web Source"):
+    """Add web URL as a source"""
+    try:
+        payload = {"userContents": [{"webContent": {"url": url, "sourceName": title}}]}
+        r = requests.post(f"{BASE_URL}/notebooks/{notebook_id}/sources:batchCreate", headers=get_headers(), json=payload)
+        return {"success": r.ok, "data": r.json() if r.ok else r.text}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+def add_youtube_source(notebook_id, url):
+    """Add YouTube video as a source"""
+    try:
+        payload = {"userContents": [{"videoContent": {"url": url}}]}
         r = requests.post(f"{BASE_URL}/notebooks/{notebook_id}/sources:batchCreate", headers=get_headers(), json=payload)
         return {"success": r.ok, "data": r.json() if r.ok else r.text}
     except Exception as e:
@@ -93,22 +114,30 @@ def share_notebook(notebook_id, email, role="VIEWER"):
 
 @app.route('/mcp', methods=['GET'])
 def mcp_sse():
-    return Response(f"data: {json.dumps({'jsonrpc':'2.0','method':'notifications/initialized','params':{'serverInfo':{'name':'notebooklm-mcp','version':'1.0.0'},'capabilities':{'tools':{}}}})}\n\n", mimetype='text/event-stream')
+    return Response(f"data: {json.dumps({'jsonrpc':'2.0','method':'notifications/initialized','params':{'serverInfo':{'name':'notebooklm-mcp','version':'1.1.0'},'capabilities':{'tools':{}}}})}\n\n", mimetype='text/event-stream')
 
 @app.route('/mcp', methods=['POST'])
 def mcp_post():
     data = request.get_json()
     method, params, rid = data.get('method',''), data.get('params',{}), data.get('id')
-    if method == 'initialize': return jsonify({"jsonrpc":"2.0","id":rid,"result":{"protocolVersion":"2024-11-05","serverInfo":{"name":"notebooklm-mcp","version":"1.0.0"},"capabilities":{"tools":{}}}})
+    if method == 'initialize': return jsonify({"jsonrpc":"2.0","id":rid,"result":{"protocolVersion":"2024-11-05","serverInfo":{"name":"notebooklm-mcp","version":"1.1.0"},"capabilities":{"tools":{}}}})
     if method == 'tools/list': return jsonify({"jsonrpc":"2.0","id":rid,"result":{"tools":MCP_TOOLS}})
     if method == 'tools/call':
         n, a = params.get('name'), params.get('arguments',{})
-        r = create_notebook(**a) if n=='create_notebook' else get_notebook(**a) if n=='get_notebook' else list_notebooks() if n=='list_notebooks' else add_source(**a) if n=='add_source' else delete_notebook(**a) if n=='delete_notebook' else share_notebook(**a) if n=='share_notebook' else {"error":"Unknown"}
+        if n=='create_notebook': r = create_notebook(**a)
+        elif n=='get_notebook': r = get_notebook(**a)
+        elif n=='list_notebooks': r = list_notebooks()
+        elif n=='add_source': r = add_source(**a)
+        elif n=='add_web_source': r = add_web_source(**a)
+        elif n=='add_youtube_source': r = add_youtube_source(**a)
+        elif n=='delete_notebook': r = delete_notebook(**a)
+        elif n=='share_notebook': r = share_notebook(**a)
+        else: r = {"error":"Unknown tool"}
         return jsonify({"jsonrpc":"2.0","id":rid,"result":{"content":[{"type":"text","text":json.dumps(r,indent=2)}]}})
     if method == 'ping': return jsonify({"jsonrpc":"2.0","id":rid,"result":{}})
     return jsonify({"jsonrpc":"2.0","id":rid,"error":{"code":-32601,"message":"Method not found"}})
 
 @app.route('/health', methods=['GET'])
-def health(): return jsonify({"status":"healthy","service":"notebooklm-mcp","impersonating":IMPERSONATE_USER or "none"})
+def health(): return jsonify({"status":"healthy","service":"notebooklm-mcp","version":"1.1.0","impersonating":IMPERSONATE_USER or "none"})
 
 if __name__ == '__main__': app.run(host='0.0.0.0', port=int(os.environ.get('PORT',8080)))
