@@ -1,15 +1,14 @@
 """
-Sovereign Mind MCP Server - Proper SSE Implementation
+Sovereign Mind MCP Server - Fixed SSE Implementation
 Uses official MCP SDK with SSE transport for ElevenLabs integration
 """
 
 import os
 import json
 import logging
-from contextlib import asynccontextmanager
 import snowflake.connector
 from starlette.applications import Starlette
-from starlette.routing import Mount, Route
+from starlette.routing import Route
 from starlette.responses import JSONResponse
 from mcp.server.fastmcp import FastMCP
 from mcp.server.sse import SseServerTransport
@@ -113,13 +112,13 @@ def query_snowflake(sql: str) -> str:
 
 
 # Create SSE transport for MCP
-sse_transport = SseServerTransport("/messages/")
+sse = SseServerTransport("/messages/")
 
 
 async def handle_sse(request):
     """Handle SSE connection for MCP protocol"""
     logger.info("New SSE connection established")
-    async with sse_transport.connect_sse(
+    async with sse.connect_sse(
         request.scope, request.receive, request._send
     ) as streams:
         await mcp._mcp_server.run(
@@ -127,6 +126,12 @@ async def handle_sse(request):
             streams[1],
             mcp._mcp_server.create_initialization_options()
         )
+
+
+async def handle_messages(request):
+    """Handle POST messages for MCP protocol"""
+    logger.info("Handling POST message")
+    await sse.handle_post_message(request.scope, request.receive, request._send)
 
 
 async def handle_root(request):
@@ -139,7 +144,7 @@ app = Starlette(
     routes=[
         Route("/", endpoint=handle_root),
         Route("/sse", endpoint=handle_sse),
-        Mount("/messages", app=sse_transport.handle_post_message),
+        Route("/messages/", endpoint=handle_messages, methods=["POST"]),
     ]
 )
 
