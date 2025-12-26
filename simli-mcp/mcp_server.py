@@ -1,5 +1,6 @@
 """
 Simli MCP Server - Manage Simli avatars and agents
+FIXED v1.1.0: Use /agents (plural) endpoint, updated API handling
 """
 from flask import Flask, request, Response
 import requests
@@ -153,6 +154,8 @@ def simli_request(method, endpoint, data=None):
     }
     url = f"{SIMLI_BASE_URL}{endpoint}"
     
+    logger.info(f"Making {method} request to {url}")
+    
     try:
         if method == "GET":
             response = requests.get(url, headers=headers, timeout=30)
@@ -165,6 +168,8 @@ def simli_request(method, endpoint, data=None):
         else:
             return {"error": f"Unknown method: {method}"}
         
+        logger.info(f"Response status: {response.status_code}")
+        
         if response.status_code >= 400:
             return {"error": f"API error {response.status_code}: {response.text}"}
         
@@ -172,13 +177,15 @@ def simli_request(method, endpoint, data=None):
             return response.json()
         return {"success": True}
     except Exception as e:
+        logger.error(f"Request error: {e}")
         return {"error": str(e)}
 
 def handle_tool_call(tool_name, arguments):
     """Handle MCP tool calls"""
     
     if tool_name == "list_agents":
-        result = simli_request("GET", "/agent")
+        # FIXED: Use /agents (plural) endpoint
+        result = simli_request("GET", "/agents")
         if isinstance(result, list):
             return {"success": True, "agents": result, "count": len(result)}
         return result
@@ -187,7 +194,8 @@ def handle_tool_call(tool_name, arguments):
         agent_id = arguments.get("agent_id")
         if not agent_id:
             return {"error": "agent_id is required"}
-        return simli_request("GET", f"/agent/{agent_id}")
+        # FIXED: Use /agents/{id} endpoint
+        return simli_request("GET", f"/agents/{agent_id}")
     
     elif tool_name == "update_agent":
         agent_id = arguments.get("agent_id")
@@ -201,7 +209,7 @@ def handle_tool_call(tool_name, arguments):
             if field in arguments and arguments[field] is not None:
                 update_data[field] = arguments[field]
         
-        return simli_request("PUT", "/agent", update_data)
+        return simli_request("PUT", "/agents", update_data)
     
     elif tool_name == "create_agent":
         create_data = {
@@ -214,13 +222,13 @@ def handle_tool_call(tool_name, arguments):
             if field in arguments and arguments[field]:
                 create_data[field] = arguments[field]
         
-        return simli_request("POST", "/agent", create_data)
+        return simli_request("POST", "/agents", create_data)
     
     elif tool_name == "delete_agent":
         agent_id = arguments.get("agent_id")
         if not agent_id:
             return {"error": "agent_id is required"}
-        return simli_request("DELETE", f"/agent/{agent_id}")
+        return simli_request("DELETE", f"/agents/{agent_id}")
     
     elif tool_name == "list_faces":
         # Return known preset faces - Simli doesn't have a public API for this
@@ -255,7 +263,7 @@ def mcp_handler():
                 "id": req_id,
                 "result": {
                     "protocolVersion": "2024-11-05",
-                    "serverInfo": {"name": "simli-mcp", "version": "1.0.0"},
+                    "serverInfo": {"name": "simli-mcp", "version": "1.1.0"},
                     "capabilities": {"tools": {"listChanged": False}}
                 }
             }
@@ -304,7 +312,7 @@ def mcp_handler():
 
 @app.route('/health', methods=['GET'])
 def health():
-    return {"status": "healthy", "service": "simli-mcp"}
+    return {"status": "healthy", "service": "simli-mcp", "version": "1.1.0"}
 
 
 if __name__ == "__main__":
